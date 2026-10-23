@@ -789,15 +789,50 @@ class IntelTool {
   }
 
   _parseX509Subject(subject) {
-    let array = subject.split(',');
-    let result = {};
-    for (let i in array) {
-      let obj = array[i].split("=");
-      if (obj.length == 2) {
-        result[obj[0]] = obj[1];
-      }
+    const result = this.parseDN(subject);
+    // callers read single strings, the last of a repeated attribute wins
+    for (const attr in result) {
+      if (Array.isArray(result[attr])) result[attr] = result[attr][result[attr].length - 1];
     }
+    return result;
+  }
 
+  // RFC 2253 DN as zeek and openssl print it, e.g. "CN=a\, b,O=c" -> {CN: "a, b", O: "c"}.
+  // a repeated attribute (OU, DC) becomes an array of its values in order
+  parseDN(dn) {
+    const result = {};
+    let attr = "", value = "", inValue = false, bytes = [];
+    const flushBytes = () => {
+      if (bytes.length) value += Buffer.from(bytes).toString(); // \XX escapes are utf-8 bytes
+      bytes = [];
+    };
+    const add = () => {
+      flushBytes();
+      attr = attr.trim();
+      if (attr) result[attr] = attr in result ? [].concat(result[attr], value) : value;
+      attr = ""; value = ""; inValue = false;
+    };
+    for (let i = 0; i < dn.length; i++) {
+      const c = dn[i];
+      if (c == "\\" && i + 1 < dn.length) {
+        const hex = dn.substr(i + 1, 2);
+        if (inValue && /^[0-9a-fA-F]{2}$/.test(hex)) {
+          bytes.push(parseInt(hex, 16));
+          i += 2;
+        } else {
+          flushBytes();
+          i++;
+          if (inValue) value += dn[i]; else attr += dn[i];
+        }
+        continue;
+      }
+      flushBytes();
+      if (c == "," || c == "+") add(); // "+" joins attributes of one multi-valued RDN
+      else if (!inValue && c == "=") inValue = true;
+      else if (inValue) value += c;
+      else attr += c;
+    }
+    add();
     return result;
   }
 
